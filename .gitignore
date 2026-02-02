@@ -9,3 +9,6 @@ wheels/
 # Virtual environments
 .venv
 parrot_dataset
+wandb
+*.pt
+*.wav
