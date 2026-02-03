@@ -3,6 +3,8 @@ import torch.nn as nn
 import torchaudio
 import wandb
 import soundfile as sf
+import random
+from datetime import datetime
 from torch.utils.data import Dataset, DataLoader, random_split
 
 # Monkeypatch for SpeechBrain compatibility with newer Torchaudio
@@ -41,18 +43,40 @@ for param in mimi.parameters(): param.requires_grad = False
 
 # 2. Custom Dataset
 class ParrotDataset(Dataset):
-    def __init__(self, root_dir):
+    def __init__(self, root_dir, split="train", val_ratio=0.1, seed=42):
         self.root = Path(root_dir)
-        self.voices = [d.name for d in self.root.iterdir() if d.is_dir()]
+        all_voices = sorted([d.name for d in self.root.iterdir() if d.is_dir()])
+        
+        # Deterministic shuffle using the provided seed
+        rng = random.Random(seed)
+        rng.shuffle(all_voices)
+        
+        # Split voices
+        n_val = max(1, int(len(all_voices) * val_ratio))
+        val_voices = all_voices[:n_val]
+        train_voices = all_voices[n_val:]
+        
+        if split == "train":
+            self.active_voices = train_voices
+        else:
+            self.active_voices = val_voices
+            
+        print(f"[{split.upper()}] Loading {len(self.active_voices)} voices...")
+        
+        # Create parallel pairs: (source_wav, target_wav, ref_wav_for_target_style)
+        # We only create pairs WHERE BOTH SOURCE AND TARGET ARE IN THE ACTIVE SET
+        # This ensures complete isolation of speakers.
         self.pairs = []
-        for i in range(len(self.voices)):
-            for j in range(len(self.voices)):
-                if i == j: continue 
-                src_v, tgt_v = self.voices[i], self.voices[j]
+        for src_v in self.active_voices:
+            for tgt_v in self.active_voices:
+                if src_v == tgt_v: continue # Different voices only
+                
+                # Find all common sentences
                 sentences = sorted(list((self.root / src_v).glob("*.wav")))
                 for s_path in sentences:
                     s_name = s_path.name
                     target_path = self.root / tgt_v / s_name
+                    # Reference is just a different sentence from the target speaker
                     ref_name = "sentence_001.wav" if s_name != "sentence_001.wav" else "sentence_000.wav"
                     ref_path = self.root / tgt_v / ref_name
                     if target_path.exists() and ref_path.exists():
@@ -86,31 +110,28 @@ def train():
         "sample_rate": SAMPLE_RATE
     })
 
-    full_dataset = ParrotDataset("parrot_dataset")
-    
-    # Validation Split (5%)
-    val_size = int(0.05 * len(full_dataset))
-    train_size = len(full_dataset) - val_size
-    train_ds, val_ds = random_split(full_dataset, [train_size, val_size])
+    # Instantiate datasets with strict speaker separation
+    train_ds = ParrotDataset("parrot_dataset", split="train")
+    val_ds = ParrotDataset("parrot_dataset", split="val")
     
     train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
     val_dl = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
     
-    print(f"Dataset Split: {len(train_ds)} Training | {len(val_ds)} Validation")
+    print(f"Dataset Split: {len(train_ds)} Training Samples | {len(val_ds)} Validation Samples")
     
     model = ParrotBrain().to(DEVICE)
-    
+
     # Resume logic
     start_epoch = 0
     if Path(WEIGHTS_PATH).exists():
         print(f"Found existing weights at {WEIGHTS_PATH}. Loading and resuming...")
         model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE))
-        start_epoch = 10 # Assuming we finished 10 epochs. 
-        print(f"Resuming from Epoch {start_epoch + 1}")
+        print(f"Resuming from initial training.")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.CrossEntropyLoss()
 
+    prev_avg_val_loss = 0
     for epoch in range(start_epoch, EPOCHS):
         model.train()
         total_loss = 0
@@ -174,8 +195,12 @@ def train():
                 val_loss += loss.item()
 
         avg_val_loss = val_loss / len(val_dl)
+        if avg_val_loss > prev_avg_val_loss and epoch > 0:
+            print(f"Early stopping triggered at epoch {epoch+1} as avg_val_loss {avg_val_loss:.4f} is greater than previous avg_val_loss {prev_avg_val_loss:.4f}")
+            break
+        prev_avg_val_loss = avg_val_loss
 
-        print(f"Epoch {epoch+1}/{EPOCHS} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Epoch {epoch+1}/{EPOCHS} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
         wandb.log({"epoch": epoch+1, "loss": avg_train_loss, "val_loss": avg_val_loss})
         
         # Save weights
