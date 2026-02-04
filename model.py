@@ -103,8 +103,8 @@ class ParrotMoshi(nn.Module):
         temporal_in = torch.cat([sos_emb, tgt_fused[:, :-1, :]], dim=1)
         temporal_in = self.pos_emb(temporal_in)
         
-        # Add Speaker Style
-        spk_vec = self.spk_proj(spk_emb).unsqueeze(1)
+        # Add Speaker Style to Temporal
+        spk_vec = self.spk_proj(spk_emb).unsqueeze(1) # [B, 1, D]
         temporal_in = temporal_in + spk_vec
         
         # Causal Mask for Time
@@ -144,6 +144,11 @@ class ParrotMoshi(nn.Module):
         # Positional Embedding for Depth (Since K=32 is a sequence)
         depth_in = self.pos_emb(depth_in) 
         
+        # Inject Speaker into Depth (Expand spk_vec to match B*T)
+        # spk_vec is [B, 1, D]. We need [B*T, 1, D]
+        spk_vec_expanded = spk_vec.repeat_interleave(T_t, dim=0) # [B*T, 1, D]
+        depth_in = depth_in + spk_vec_expanded
+        
         # Causal Mask for Depth
         depth_mask = torch.triu(torch.ones(K, K, device=tgt_tokens.device) * float('-inf'), diagonal=1)
         
@@ -165,6 +170,9 @@ class ParrotMoshi(nn.Module):
             depth_seq[:, :-1, :]
         ], dim=1)
         depth_seq_shifted = self.pos_emb(depth_seq_shifted)
+        
+        # Inject Speaker to Depth Input (Shifted) as well
+        depth_seq_shifted = depth_seq_shifted + spk_vec_expanded
         
         depth_out = self.depth_decoder(depth_seq_shifted, temporal_context, tgt_mask=depth_mask) # [B*T, 32, D]
         
@@ -210,6 +218,10 @@ class ParrotMoshi(nn.Module):
             
             for k in range(self.num_codebooks):
                 depth_in_pos = self.pos_emb(depth_input_seq)
+                
+                # Add Speaker to Depth Input
+                spk_vec = self.spk_proj(spk_emb).unsqueeze(1) # [1, 1, D]
+                depth_in_pos = depth_in_pos + spk_vec
                 
                 d_out = self.depth_decoder(depth_in_pos, current_latent)
                 logit_k = self.head(d_out[:, -1, :]) # [1, Vocab]
