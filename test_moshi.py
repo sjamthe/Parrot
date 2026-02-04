@@ -98,7 +98,7 @@ def main():
     # 6. Save
     decoded = mimi.decode(generated_tokens.transpose(1, 2)).audio_values
     out_path = "test_moshi_output.wav"
-    sf.write(out_path, decoded.squeeze().cpu().numpy(), 24000)
+    sf.write(out_path, decoded.squeeze().detach().cpu().numpy(), 24000)
     print(f"Saved generated audio to {out_path}")
 
 if __name__ == "__main__":
