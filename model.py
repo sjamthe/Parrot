@@ -213,35 +213,31 @@ class ParrotMoshi(nn.Module):
             # Generate C0 -> C1 ... -> C31
             curr_codes = [] # List of indices
             
-            # Depth Input starts as SOS (Zero)
-            depth_input_seq = torch.zeros(1, 1, self.hidden_dim, device=src_tokens.device)
+            # Depth Input starts with Temporal Latent H_t (Context)
+            # Training: [H_t, C0, C1... C30] -> Predicts [C0...C31]
+            depth_input_seq = current_latent # [1, 1, D]
             
             for k in range(self.num_codebooks):
-                # Pos Emb
-                # We can't easily use the full pos_emb class for step-by-step unless we index it
-                # For simplicity in this non-optimized gen, we re-run depth seq
-                
-                # Input to depth decoder: [1, k+1, D]
-                # Cross-Attend to current_latent (H_t)
-                
-                # Add Pos Emb
+                # Add Pos Emb (Note: We are embedding the sequence [H_t, C0...])
+                # We need to slice the pos_emb correctly or just apply to current length
+                # Since pos_emb adds to [:seq_len], it works automatically.
                 depth_in_pos = self.pos_emb(depth_input_seq)
                 
+                # Run Depth Decoder
+                # We cross-attend to H_t (current_latent) as well?
+                # In Training: self.depth_decoder(depth_seq_shifted, temporal_context)
+                # Yes, we pass temporal_context as memory.
                 d_out = self.depth_decoder(depth_in_pos, current_latent)
-                logit_k = self.head(d_out[:, -1, :]) # [1, Vocab]
                 
+                logit_k = self.head(d_out[:, -1, :]) # [1, Vocab]
                 code_k = torch.argmax(logit_k, dim=-1) # Greedy
                 curr_codes.append(code_k)
                 
-                # Append predicted code embedding to input for next k
+                # Append predicted code embedding for next step
                 if k < self.num_codebooks - 1:
-                    next_emb = self.codebook_embs[k+1](code_k).unsqueeze(1) # [1, 1, D]
-                    # Note: We should probably embed code_k with embs[k] not k+1?
-                    # The model learned: Input C_k predicts C_k+1?
-                    # No, Training: Input [SOS, C0] -> Predicts [C0, C1].
-                    # So to predict C1, we input C0.
-                    # So we embed code_k using embs[k].
-                    next_emb = self.codebook_embs[k](code_k).unsqueeze(1)
+                    # To predict C_{k+1}, we input C_k
+                    # We use codebook_embs[k] for code_k
+                    next_emb = self.codebook_embs[k](code_k).unsqueeze(1) # [1, 1, D]
                     depth_input_seq = torch.cat([depth_input_seq, next_emb], dim=1)
             
             # Stack codes
