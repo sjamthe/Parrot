@@ -122,20 +122,24 @@ def train():
     criterion = nn.CrossEntropyLoss()
 
     best_val_loss = float('inf')
+    
+    # Initialize Resampler once on GPU
+    resampler_16k = torchaudio.transforms.Resample(SAMPLE_RATE, 16000).to(DEVICE)
 
     for epoch in range(EPOCHS):
         model.train()
         total_loss = 0
         
         for src_wav, tgt_wav, ref_wav in train_dl:
+            # Move to GPU immediately
             src_wav, tgt_wav, ref_wav = src_wav.to(DEVICE), tgt_wav.to(DEVICE), ref_wav.to(DEVICE)
             
             with torch.no_grad():
+                # Mimi Encode happens on GPU because inputs are on GPU
                 src_tokens = mimi.encode(src_wav).audio_codes.transpose(1, 2) # [B, T, 32]
                 tgt_tokens = mimi.encode(tgt_wav).audio_codes.transpose(1, 2) # [B, T, 32]
                 
-                resampler = torchaudio.transforms.Resample(SAMPLE_RATE, 16000).to(DEVICE)
-                ref_wav_16k = resampler(ref_wav)
+                ref_wav_16k = resampler_16k(ref_wav)
                 spk_emb = speaker_encoder.encode_batch(ref_wav_16k.squeeze(1)).squeeze(1)
 
             logits = model(src_tokens, tgt_tokens, spk_emb) # [B, T, 32, Vocab]
@@ -161,8 +165,7 @@ def train():
                 src_tokens = mimi.encode(src_wav).audio_codes.transpose(1, 2)
                 tgt_tokens = mimi.encode(tgt_wav).audio_codes.transpose(1, 2)
                 
-                resampler = torchaudio.transforms.Resample(SAMPLE_RATE, 16000).to(DEVICE)
-                ref_wav_16k = resampler(ref_wav)
+                ref_wav_16k = resampler_16k(ref_wav)
                 spk_emb = speaker_encoder.encode_batch(ref_wav_16k.squeeze(1)).squeeze(1)
 
                 logits = model(src_tokens, tgt_tokens, spk_emb)

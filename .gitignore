@@ -11,4 +11,5 @@ wheels/
 parrot_dataset
 wandb
 *.pt
-*.wavrequirements.txt
+*.wav
+requirements.txt
