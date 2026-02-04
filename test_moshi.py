@@ -77,10 +77,13 @@ def main():
     gt_wav, _ = load_audio(gt_path)
     tgt_tokens_gt = mimi.encode(gt_wav.unsqueeze(1).to(DEVICE)).audio_codes.transpose(1, 2)
     
-    # 4. Generate
-    print("\nGenerating...")
-    max_len = tgt_tokens_gt.shape[1] 
-    generated_tokens = model.generate(src_tokens, spk_emb, max_len=max_len)
+    # 4. Generate with Adaptive Sampling
+    print("\nGenerating with Adaptive Temperature (C0-C3: 0.2, C4-C31: 0.8)...")
+    max_len = tgt_tokens_gt.shape[1]
+    
+    # Create Schedule
+    temps = [0.2] * 4 + [0.8] * (32 - 4)
+    generated_tokens = model.generate(src_tokens, spk_emb, max_len=max_len, temperature=temps, top_k=50)
     
     # 5. DIAGNOSIS
     print("\n--- Token Match Diagnosis (First 4 Codebooks) ---")

@@ -177,6 +177,7 @@ class ParrotMoshi(nn.Module):
     def generate(self, src_tokens, spk_emb, max_len=500, temperature=1.0, top_k=50):
         # src_tokens: [1, T_s, 32]
         # spk_emb: [1, 192]
+        # temperature: float or list of 32 floats
         
         # 1. Encode Source
         src_emb = self._fuse_codebooks(src_tokens)
@@ -213,9 +214,15 @@ class ParrotMoshi(nn.Module):
                 d_out = self.depth_decoder(depth_in_pos, current_latent)
                 logit_k = self.head(d_out[:, -1, :]) # [1, Vocab]
                 
+                # Determine Temp
+                if isinstance(temperature, list):
+                    temp = temperature[k]
+                else:
+                    temp = temperature
+
                 # Sampling Logic
-                if temperature > 0:
-                    probs = torch.softmax(logit_k / temperature, dim=-1)
+                if temp > 0:
+                    probs = torch.softmax(logit_k / temp, dim=-1)
                     # Top-K
                     if top_k > 0:
                         vals, indices = torch.topk(probs, top_k)
@@ -226,7 +233,7 @@ class ParrotMoshi(nn.Module):
                 else:
                     code_k = torch.argmax(logit_k, dim=-1) # Greedy
                 
-                curr_codes.append(code_k);
+                curr_codes.append(code_k)
                 
                 if k < self.num_codebooks - 1:
                     next_emb = self.codebook_embs[k](code_k).unsqueeze(1)
