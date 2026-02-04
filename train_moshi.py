@@ -18,7 +18,7 @@ from model import ParrotMoshi
 from pathlib import Path
 
 # --- CONFIGURATION ---
-DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
+DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
 SAMPLE_RATE = 24000
 BATCH_SIZE = 8 # Increased for stability
 EPOCHS = 100   # Increased for convergence

@@ -1,7 +1,9 @@
 import asyncio
 import edge_tts
 import os
+import torch
 import torchaudio
+import soundfile as sf
 import json
 from pathlib import Path
 
@@ -10,6 +12,7 @@ OUTPUT_DIR = "parrot_dataset"
 METADATA_FILE = os.path.join(OUTPUT_DIR, "metadata.jsonl")
 SAMPLE_RATE = 24000  # Mimi expects 24kHz
 CONCURRENCY_LIMIT = 5 # Avoid rate limiting
+DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
 
 def load_lines(filename):
     with open(filename, "r", encoding="utf-8") as f:
@@ -40,19 +43,31 @@ async def generate_single(sem, text, index, voice):
             await communicate.save(output_path)
             
             # 2. Convert to 24kHz Mono WAV (Mimi Standard)
-            waveform, sr = torchaudio.load(output_path)
+            # Use soundfile directly to avoid torchaudio backend issues
+            data, sr = sf.read(output_path)
+            waveform = torch.from_numpy(data).float()
+            
+            # [T, C] -> [C, T]
+            if waveform.ndim == 1:
+                waveform = waveform.unsqueeze(0)
+            else:
+                waveform = waveform.transpose(0, 1)
+            
+            waveform = waveform.to(DEVICE)
+
             if sr != SAMPLE_RATE:
-                resampler = torchaudio.transforms.Resample(sr, SAMPLE_RATE)
+                resampler = torchaudio.transforms.Resample(sr, SAMPLE_RATE).to(DEVICE)
                 waveform = resampler(waveform)
             
             # Ensure Mono
             if waveform.shape[0] > 1:
                 waveform = waveform.mean(dim=0, keepdim=True)
                 
-            torchaudio.save(final_path, waveform, SAMPLE_RATE)
+            # Save from CPU
+            torchaudio.save(final_path, waveform.cpu(), SAMPLE_RATE)
             os.remove(output_path) # Clean up mp3
             
-            print(f"Generated {voice} | Sentence {index}")
+            print(f"Generated {voice} | Sentence {index} on {DEVICE}")
             
             return {
                 "id": f"{voice}_{index:03d}",
@@ -82,7 +97,6 @@ async def main():
     valid_results = [r for r in results if r is not None]
     
     # Write metadata
-    # We overwrite metadata for now as we are overwriting files
     with open(METADATA_FILE, "w", encoding="utf-8") as f:
         for entry in valid_results:
             f.write(json.dumps(entry) + "\n")

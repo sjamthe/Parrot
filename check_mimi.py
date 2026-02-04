@@ -4,7 +4,7 @@ import soundfile as sf
 from transformers import MimiModel
 from pathlib import Path
 
-DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
+DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
 
 def load_audio(path, target_sr=24000):
     wav, sr = sf.read(path)

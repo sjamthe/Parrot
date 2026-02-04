@@ -12,7 +12,7 @@ if not hasattr(torchaudio, "list_audio_backends"):
 from speechbrain.inference.speaker import EncoderClassifier
 from model import ParrotMoshi
 
-DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
+DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
 SAMPLE_RATE = 24000
 WEIGHTS_PATH = "parrot_moshi_weights.pt"
 
