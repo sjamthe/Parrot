@@ -174,7 +174,7 @@ class ParrotMoshi(nn.Module):
         return logits.reshape(B, T_t, K, self.vocab_size)
 
     @torch.no_grad()
-    def generate(self, src_tokens, spk_emb, max_len=500):
+    def generate(self, src_tokens, spk_emb, max_len=500, temperature=1.0, top_k=50):
         # src_tokens: [1, T_s, 32]
         # spk_emb: [1, 192]
         
@@ -186,17 +186,11 @@ class ParrotMoshi(nn.Module):
         # 2. Loop
         curr_tgt_tokens = torch.zeros(1, 0, 32, dtype=torch.long, device=src_tokens.device)
         
-        # Start with just SOS for Temporal (handled implicitly by empty history loop logic or explicit start)
-        # We need an explicit loop because at each T we run the Depth loop.
-        
         for t in range(max_len):
             # --- Temporal Step ---
-            # Prepare Temporal Input from History
             if t == 0:
                 temporal_in = torch.zeros(1, 1, self.hidden_dim, device=src_tokens.device) # SOS
             else:
-                # Fused history
-                # We only need the last step if using KV cache, but here we re-run full seq (slow but safe)
                 fused_hist = self._fuse_codebooks(curr_tgt_tokens)
                 sos = torch.zeros(1, 1, self.hidden_dim, device=src_tokens.device)
                 temporal_in = torch.cat([sos, fused_hist], dim=1) # [1, T+1, D]
@@ -210,41 +204,37 @@ class ParrotMoshi(nn.Module):
             current_latent = temp_out[:, -1, :].unsqueeze(1) # [1, 1, D] (H_t)
             
             # --- Depth Step (Loop K=32) ---
-            # Generate C0 -> C1 ... -> C31
-            curr_codes = [] # List of indices
-            
-            # Depth Input starts with Temporal Latent H_t (Context)
-            # Training: [H_t, C0, C1... C30] -> Predicts [C0...C31]
+            curr_codes = [] 
             depth_input_seq = current_latent # [1, 1, D]
             
             for k in range(self.num_codebooks):
-                # Add Pos Emb (Note: We are embedding the sequence [H_t, C0...])
-                # We need to slice the pos_emb correctly or just apply to current length
-                # Since pos_emb adds to [:seq_len], it works automatically.
                 depth_in_pos = self.pos_emb(depth_input_seq)
                 
-                # Run Depth Decoder
-                # We cross-attend to H_t (current_latent) as well?
-                # In Training: self.depth_decoder(depth_seq_shifted, temporal_context)
-                # Yes, we pass temporal_context as memory.
                 d_out = self.depth_decoder(depth_in_pos, current_latent)
-                
                 logit_k = self.head(d_out[:, -1, :]) # [1, Vocab]
-                code_k = torch.argmax(logit_k, dim=-1) # Greedy
-                curr_codes.append(code_k)
                 
-                # Append predicted code embedding for next step
+                # Sampling Logic
+                if temperature > 0:
+                    probs = torch.softmax(logit_k / temperature, dim=-1)
+                    # Top-K
+                    if top_k > 0:
+                        vals, indices = torch.topk(probs, top_k)
+                        probs = torch.zeros_like(probs).scatter_(1, indices, vals)
+                        probs = probs / probs.sum(dim=-1, keepdim=True) # Renormalize
+                    
+                    code_k = torch.multinomial(probs, 1).squeeze(-1) # [1]
+                else:
+                    code_k = torch.argmax(logit_k, dim=-1) # Greedy
+                
+                curr_codes.append(code_k);
+                
                 if k < self.num_codebooks - 1:
-                    # To predict C_{k+1}, we input C_k
-                    # We use codebook_embs[k] for code_k
-                    next_emb = self.codebook_embs[k](code_k).unsqueeze(1) # [1, 1, D]
+                    next_emb = self.codebook_embs[k](code_k).unsqueeze(1)
                     depth_input_seq = torch.cat([depth_input_seq, next_emb], dim=1)
             
-            # Stack codes
             stack_codes = torch.stack(curr_codes, dim=1).unsqueeze(0) # [1, 1, 32]
             curr_tgt_tokens = torch.cat([curr_tgt_tokens, stack_codes], dim=1)
             
-            # Stop condition? Length check.
             if curr_tgt_tokens.shape[1] >= src_tokens.shape[1] + 10:
                 break
                 
