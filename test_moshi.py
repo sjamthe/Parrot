@@ -35,64 +35,71 @@ def main():
     model = ParrotMoshi().to(DEVICE)
     if Path(WEIGHTS_PATH).exists():
         model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE))
-        print("Loaded Moshi weights.")
+        print(f"Loaded weights from {WEIGHTS_PATH}")
     else:
-        print("No weights found! Please train first.")
+        print("No weights found!")
         return
     model.eval()
 
-    # 2. Pick Test Data
+    # 2. Setup Test Pair (Content: Voice A S1 -> Style: Voice B S2 -> GT: Voice B S1)
     dataset_path = Path("parrot_dataset")
     voices = sorted([d for d in dataset_path.iterdir() if d.is_dir()])
-    if len(voices) < 2: return
     
-    # Let's try to find a training voice (to see if it learned ANYTHING)
-    # and a validation voice (to check generalization).
-    # Since we shuffled, we don't know exactly which is which without seed match,
-    # but let's just pick index 0 and 1.
+    # Let's pick two voices from the training set (to check if it learned training data)
+    # We'll use Natasha and William (if they exist)
+    v1 = voices[0] # Usually Natasha
+    v2 = voices[1] # Usually William
     
-    src_voice = voices[0]
-    tgt_voice = voices[1]
+    s_id = "sentence_005" # Let's use a sentence that isn't the first one
+    ext = ".mp3" # Or .wav
     
-    src_path = src_voice / "sentence_001.wav"
-    ref_path = tgt_voice / "sentence_002.wav"
+    src_path = v1 / f"{s_id}{ext}"
+    ref_path = v2 / f"sentence_001{ext}" # Any sentence for style
+    gt_path = v2 / f"{s_id}{ext}"        # SAME sentence ID as source, but in target voice
     
+    if not gt_path.exists():
+        # Fallback to whatever is available
+        print(f"Warning: {gt_path} not found, using random.")
+        return
+
     print(f"Source Content: {src_path}")
     print(f"Target Style:   {ref_path}")
+    print(f"Comparing vs:   {gt_path} (Ground Truth)")
     
     # 3. Process
     src_wav, _ = load_audio(src_path)
-    src_wav = src_wav.to(DEVICE)
+    src_tokens = mimi.encode(src_wav.unsqueeze(1).to(DEVICE)).audio_codes.transpose(1, 2)
     
     ref_wav, _ = load_audio(ref_path)
-    ref_wav = ref_wav.to(DEVICE)
+    resampler = torchaudio.transforms.Resample(SAMPLE_RATE, 16000).to(DEVICE)
+    spk_emb = speaker_encoder.encode_batch(resampler(ref_wav.to(DEVICE)).squeeze(1)).squeeze(1)
     
-    with torch.no_grad():
-        # Encode Source -> [1, T, 32]
-        src_tokens = mimi.encode(src_wav.unsqueeze(1)).audio_codes.transpose(1, 2)
-        
-        # Encode Ref -> Speaker
-        resampler = torchaudio.transforms.Resample(SAMPLE_RATE, 16000).to(DEVICE)
-        ref_wav_16k = resampler(ref_wav)
-        spk_emb = speaker_encoder.encode_batch(ref_wav_16k.squeeze(1)).squeeze(1)
+    gt_wav, _ = load_audio(gt_path)
+    tgt_tokens_gt = mimi.encode(gt_wav.unsqueeze(1).to(DEVICE)).audio_codes.transpose(1, 2)
+    
+    # 4. Generate
+    print("\nGenerating...")
+    max_len = tgt_tokens_gt.shape[1] 
+    generated_tokens = model.generate(src_tokens, spk_emb, max_len=max_len)
+    
+    # 5. DIAGNOSIS
+    print("\n--- Token Match Diagnosis (First 4 Codebooks) ---")
+    limit = min(generated_tokens.shape[1], tgt_tokens_gt.shape[1], 15)
+    matches = 0
+    for t in range(limit):
+        gen = generated_tokens[0, t, :4].cpu().numpy()
+        gt = tgt_tokens_gt[0, t, :4].cpu().numpy()
+        match = (gen == gt).all()
+        if match: matches += 1
+        print(f"Step {t:02d}: GT {gt} | GEN {gen} | Match: {match}")
+    
+    print(f"\nSummary: {matches}/{limit} frames matched perfectly in first 4 codebooks.")
 
-        # Generate
-        print("Generating audio (Double Loop AR)... this will take time...")
-        # We generate roughly the same length as source
-        max_len = src_tokens.shape[1] + 10
-        generated_tokens = model.generate(src_tokens, spk_emb, max_len=max_len) # [1, T_gen, 32]
-        
-        print(f"Generated {generated_tokens.shape[1]} frames.")
-
-        # Decode
-        # Mimi expects [B, 32, T]
-        codes_to_decode = generated_tokens.transpose(1, 2)
-        decoded = mimi.decode(codes_to_decode).audio_values
-
-    # Save
+    # 6. Save
+    decoded = mimi.decode(generated_tokens.transpose(1, 2)).audio_values
     out_path = "test_moshi_output.wav"
     sf.write(out_path, decoded.squeeze().cpu().numpy(), 24000)
-    print(f"Saved to {out_path}")
+    print(f"Saved generated audio to {out_path}")
 
 if __name__ == "__main__":
     main()
