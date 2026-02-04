@@ -19,7 +19,7 @@ def load_audio(path, target_sr=24000):
     return wav_tensor
 
 def check_reconstruction():
-    print(f"Testing Mimi reconstruction (8/32 codebooks) on {DEVICE}...")
+    print(f"Testing Mimi reconstruction (4/32 codebooks) on {DEVICE}...")
     mimi = MimiModel.from_pretrained("kyutai/mimi").to(DEVICE).eval()
     
     # Pick a random sample from your dataset
@@ -39,23 +39,18 @@ def check_reconstruction():
         encoded = mimi.encode(wav)
         codes = encoded.audio_codes # [1, 32, T_tokens]
         
-        # 2. Keep only 8, Zero the rest
-        codes_8 = codes.clone()
-        codes_8[:, 8:, :] = 0 
+        # 2. Keep only 1, Zero the rest
+        codes_4 = codes.clone()
+        codes_4[:, 1:, :] = 0 
         
         # 3. Decode
-        reconstructed_8 = mimi.decode(codes_8).audio_values
-        
-        # 4. Decode with all 32 (for comparison)
-        reconstructed_full = mimi.decode(codes).audio_values
+        reconstructed_4 = mimi.decode(codes_4).audio_values
 
-    # Save both
-    sf.write("mimi_test_8_codebooks.wav", reconstructed_8.squeeze().cpu().numpy(), 24000)
-    sf.write("mimi_test_full_32_codebooks.wav", reconstructed_full.squeeze().cpu().numpy(), 24000)
+    # Save output
+    sf.write("mimi_test_1_codebooks.wav", reconstructed_4.squeeze().cpu().numpy(), 24000)
     
-    print("Files saved:")
-    print(" - mimi_test_8_codebooks.wav (This is the best your Parrot model can currently do)")
-    print(" - mimi_test_full_32_codebooks.wav (Original Mimi quality)")
+    print("File saved:")
+    print(" - mimi_test_4_codebooks.wav (Minimal content/intelligibility test)")
 
 if __name__ == "__main__":
     check_reconstruction()
