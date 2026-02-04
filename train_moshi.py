@@ -22,6 +22,8 @@ DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.i
 print(f"Using device: {DEVICE}")
 SAMPLE_RATE = 24000
 BATCH_SIZE = 24 # Increased for A40 GPU
+if DEVICE == "mps": BATCH_SIZE = 4
+print(f"Batch Size: {BATCH_SIZE}")
 EPOCHS = 100   # Increased for convergence
 LEARNING_RATE = 1e-4
 WEIGHTS_PATH = "parrot_moshi_weights.pt"
@@ -111,12 +113,15 @@ def train():
     val_ds = ParrotDataset("parrot_dataset", split="val")
     
     # Optimized DataLoader
+    num_workers = 0 if DEVICE == "mps" else 4
+    pin_memory = DEVICE == "cuda"
+
     train_dl = DataLoader(
         train_ds, 
         batch_size=BATCH_SIZE, 
         shuffle=True, 
         collate_fn=collate_fn,
-        num_workers=4,
+        num_workers=num_workers,
         pin_memory=True
     )
     val_dl = DataLoader(
@@ -124,7 +129,7 @@ def train():
         batch_size=BATCH_SIZE, 
         shuffle=False, 
         collate_fn=collate_fn,
-        num_workers=2,
+        num_workers=num_workers // 2 if num_workers > 0 else 0,
         pin_memory=True
     )
     
@@ -132,7 +137,7 @@ def train():
     
     model = ParrotMoshi().to(DEVICE)
     if Path(WEIGHTS_PATH).exists():
-        print("Resuming Moshi model...")
+        print("Model weights file found. Resuming Moshi model training ...")
         model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE))
         
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
@@ -197,11 +202,12 @@ def train():
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), WEIGHTS_PATH)
-            print(f"Saved best model (Val Loss: {best_val_loss:.4f})")
         else:
             print(f"Validation loss did not improve (Best: {best_val_loss:.4f})")
-            
+
+        torch.save(model.state_dict(), WEIGHTS_PATH)
+        print(f"Saved best model (Val Loss: {best_val_loss:.4f})")
+
         # Periodic Save
         if (epoch + 1) % 10 == 0:
             torch.save(model.state_dict(), f"parrot_moshi_epoch_{epoch+1}.pt")

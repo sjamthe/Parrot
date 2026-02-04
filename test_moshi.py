@@ -51,7 +51,9 @@ def main():
     v2 = voices[1] # Usually William
     
     s_id = "sentence_005" # Let's use a sentence that isn't the first one
-    ext = ".mp3" # Or .wav
+    #ext = ".mp3" # Or .wav
+    for ext in [".mp3", ".wav"]:
+        if (v1 / f"{s_id}{ext}").exists(): break
     
     src_path = v1 / f"{s_id}{ext}"
     ref_path = v2 / f"sentence_001{ext}" # Any sentence for style
