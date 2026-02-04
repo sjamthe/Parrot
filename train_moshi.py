@@ -26,6 +26,7 @@ LEARNING_RATE = 1e-4
 WEIGHTS_PATH = "parrot_moshi_weights.pt"
 
 def load_audio(path):
+    # Support mp3 and wav
     wav, sr = sf.read(path)
     if wav.ndim == 1: wav = wav[None, :] 
     else: wav = wav.T
@@ -33,8 +34,11 @@ def load_audio(path):
 
 class ParrotDataset(Dataset):
     def __init__(self, root_dir, split="train", val_ratio=0.1, seed=42):
-        self.root = Path(root_dir)
-        all_voices = sorted([d.name for d in self.root.iterdir() if d.is_dir()])
+        self.root = Path(root_dir).resolve() # Force absolute path
+        if not self.root.exists():
+            raise FileNotFoundError(f"Dataset root not found: {self.root}")
+
+        all_voices = sorted([d.name.strip() for d in self.root.iterdir() if d.is_dir()])
         rng = random.Random(seed)
         rng.shuffle(all_voices)
         n_val = max(1, int(len(all_voices) * val_ratio))
@@ -42,18 +46,42 @@ class ParrotDataset(Dataset):
         train_voices = all_voices[n_val:]
         self.active_voices = train_voices if split == "train" else val_voices
         
+        print(f"[{split.upper()}] Scanning {len(self.active_voices)} voices in {self.root}...")
+        
         self.pairs = []
         for src_v in self.active_voices:
+            src_dir = self.root / src_v
+            try:
+                all_files = list(src_dir.iterdir())
+                # Look for wav or mp3
+                sentences = sorted([f for f in all_files if f.suffix.lower() in [".wav", ".mp3"]])
+            except Exception as e:
+                print(f"Error accessing {src_dir}: {e}")
+                continue
+
+            if not sentences:
+                print(f"Warning: No audio files found in {src_dir} (Files present: {len(all_files)})")
+                continue
+
             for tgt_v in self.active_voices:
                 if src_v == tgt_v: continue
-                sentences = sorted(list((self.root / src_v).glob("*.wav")))
+                tgt_dir = self.root / tgt_v
+                
                 for s_path in sentences:
                     s_name = s_path.name
-                    target_path = self.root / tgt_v / s_name
-                    ref_name = "sentence_001.wav" if s_name != "sentence_001.wav" else "sentence_000.wav"
-                    ref_path = self.root / tgt_v / ref_name
+                    target_path = tgt_dir / s_name
+                    
+                    # Ref logic
+                    # Try to find ref with same extension
+                    ext = s_path.suffix
+                    ref_name = f"sentence_001{ext}" if s_name.lower() != f"sentence_001{ext}" else f"sentence_000{ext}"
+                    ref_path = tgt_dir / ref_name
+                    
                     if target_path.exists() and ref_path.exists():
-                        self.pairs.append((s_path, target_path, ref_path))
+                        self.pairs.append((str(s_path), str(target_path), str(ref_path)))
+                        
+        print(f"[{split.upper()}] Found {len(self.pairs)} pairs.")
+
     def __len__(self): return len(self.pairs)
     def __getitem__(self, idx):
         src_p, tgt_p, ref_p = self.pairs[idx]
