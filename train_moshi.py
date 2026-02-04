@@ -20,7 +20,7 @@ from pathlib import Path
 # --- CONFIGURATION ---
 DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
 SAMPLE_RATE = 24000
-BATCH_SIZE = 8 # Increased for stability
+BATCH_SIZE = 24 # Increased for A40 GPU
 EPOCHS = 100   # Increased for convergence
 LEARNING_RATE = 1e-4
 WEIGHTS_PATH = "parrot_moshi_weights.pt"
@@ -108,8 +108,24 @@ def train():
     
     train_ds = ParrotDataset("parrot_dataset", split="train")
     val_ds = ParrotDataset("parrot_dataset", split="val")
-    train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
-    val_dl = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
+    
+    # Optimized DataLoader
+    train_dl = DataLoader(
+        train_ds, 
+        batch_size=BATCH_SIZE, 
+        shuffle=True, 
+        collate_fn=collate_fn,
+        num_workers=4,
+        pin_memory=True
+    )
+    val_dl = DataLoader(
+        val_ds, 
+        batch_size=BATCH_SIZE, 
+        shuffle=False, 
+        collate_fn=collate_fn,
+        num_workers=2,
+        pin_memory=True
+    )
     
     print(f"Moshi Training on {len(train_ds)} samples. Validation on {len(val_ds)} samples.")
     
