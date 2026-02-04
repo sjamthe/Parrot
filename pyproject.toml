@@ -12,6 +12,7 @@ dependencies = [
     "speechbrain>=1.0.2",
     "torch>=2.5.1",
     "torchaudio>=2.5.1",
+    "torchcodec>=0.10.0",
     "torchvision>=0.20.1",
     "transformers>=4.48.2",
     "wandb>=0.19.5",
