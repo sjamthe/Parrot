@@ -19,6 +19,7 @@ from pathlib import Path
 
 # --- CONFIGURATION ---
 DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
+print(f"Using device: {DEVICE}")
 SAMPLE_RATE = 24000
 BATCH_SIZE = 24 # Increased for A40 GPU
 EPOCHS = 100   # Increased for convergence
