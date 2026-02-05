@@ -96,7 +96,8 @@ def train():
         num_codebooks = dummy_codes.shape[1]
         print(f"Detected {num_codebooks} codebooks from Qwen.")
 
-    model = ParrotMoshi(vocab_size=VOCAB_SIZE, num_codebooks=num_codebooks, speaker_dim=2048).to(DEVICE)
+    # Init ParrotMoshi (BF16 for A40)
+    model = ParrotMoshi(vocab_size=VOCAB_SIZE, num_codebooks=num_codebooks, speaker_dim=2048).to(DEVICE, dtype=torch.bfloat16)
     
     if Path(WEIGHTS_PATH).exists():
         print("Resuming Qwen model...")
@@ -104,6 +105,8 @@ def train():
         
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.CrossEntropyLoss()
+    resampler_16k = torchaudio.transforms.Resample(SAMPLE_RATE, 16000).to(DEVICE) # Keeps float32 audio usually?
+    # Audio processing usually stays FP32 until encode/embed. Qwen encode handles conversion.
     
     best_val_loss = float('inf')
 
@@ -115,11 +118,17 @@ def train():
             src_wav, tgt_wav, ref_wav = src_wav.to(DEVICE), tgt_wav.to(DEVICE), ref_wav.to(DEVICE)
             
             with torch.no_grad():
+                # Qwen Encode (Returns [B, T, 32] -> Transposed)
                 src_tokens = qwen.encode(src_wav).audio_codes.transpose(1, 2)
                 tgt_tokens = qwen.encode(tgt_wav).audio_codes.transpose(1, 2)
-                spk_emb = qwen.get_speaker_embedding(ref_wav) # [B, 2048]
+                
+                # Speaker Embedding is BF16 from Qwen
+                spk_emb = qwen.get_speaker_embedding(ref_wav) 
 
+            # Forward pass (BF16 model handles BF16 inputs)
             logits = model(src_tokens, tgt_tokens, spk_emb)
+            
+            # Loss (Logits are BF16, CrossEntropy handles it or auto-casts)
             loss = criterion(logits.reshape(-1, VOCAB_SIZE), tgt_tokens.reshape(-1))
             
             optimizer.zero_grad()

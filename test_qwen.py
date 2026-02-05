@@ -34,7 +34,9 @@ def main():
         num_codebooks = qwen.encode(dummy_wav).audio_codes.shape[1]
         print(f"Detected {num_codebooks} codebooks.")
 
-    model = ParrotMoshi(vocab_size=VOCAB_SIZE, num_codebooks=num_codebooks, speaker_dim=2048).to(DEVICE)
+    # Model in BF16
+    model = ParrotMoshi(vocab_size=VOCAB_SIZE, num_codebooks=num_codebooks, speaker_dim=2048).to(DEVICE, dtype=torch.bfloat16)
+    
     if Path(WEIGHTS_PATH).exists():
         model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE))
         print("Loaded weights.")
@@ -56,7 +58,7 @@ def main():
         if (v1 / f"{s_id}{ext}").exists(): break
     
     src_path = v1 / f"{s_id}{ext}"
-    ref_path = v2 / "sentence_001{ext}" # Any sentence for style
+    ref_path = v2 / f"sentence_001{ext}" # Any sentence for style
     gt_path = v2 / f"{s_id}{ext}"        # SAME sentence ID as source, but in target voice
     
     if not gt_path.exists():
@@ -82,7 +84,7 @@ def main():
         src_tokens = qwen.encode(src_wav.unsqueeze(1)).audio_codes.transpose(1, 2)
         tgt_tokens_gt = qwen.encode(gt_wav.unsqueeze(1)).audio_codes.transpose(1, 2)
         
-        # New Speaker Embedding from Qwen
+        # New Speaker Embedding
         spk_emb = qwen.get_speaker_embedding(ref_wav.unsqueeze(1))
         
         print("\nGenerating...")
@@ -108,7 +110,7 @@ def main():
         decoded = qwen.decode(generated_tokens.transpose(1, 2)).audio_values
         
     out_path = "test_qwen_output.wav"
-    sf.write(out_path, decoded.squeeze().detach().cpu().numpy(), 24000)
+    sf.write(out_path, decoded.squeeze().float().cpu().numpy(), 24000) # .float() before numpy
     print(f"Saved to {out_path}")
 
 if __name__ == "__main__":
