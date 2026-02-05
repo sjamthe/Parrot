@@ -16,5 +16,6 @@ dependencies = [
     "torchcodec>=0.10.0",
     "transformers>=4.49.0",
     "wandb>=0.19.5",
+    "qwen-tts>=0.0.5",
+    "flash-attn>=2.8.3",
 ]
-
