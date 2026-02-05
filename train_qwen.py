@@ -129,7 +129,7 @@ def train():
                 tgt_tokens = qwen.encode(tgt_wav_16k, sr=16000).audio_codes.transpose(1, 2)
                 
                 # Speaker Embedding
-                spk_emb = qwen.get_speaker_embedding(ref_wav_16k).float() # Cast if needed, or remove float() if using BF16 model logic
+                spk_emb = qwen.get_speaker_embedding(ref_wav_16k).to(dtype=torch.bfloat16)
 
             # Forward pass (BF16 model handles BF16 inputs)
             logits = model(src_tokens, tgt_tokens, spk_emb)
@@ -158,7 +158,7 @@ def train():
 
                 src_tokens = qwen.encode(src_wav_16k, sr=16000).audio_codes.transpose(1, 2)
                 tgt_tokens = qwen.encode(tgt_wav_16k, sr=16000).audio_codes.transpose(1, 2)
-                spk_emb = qwen.get_speaker_embedding(ref_wav_16k)
+                spk_emb = qwen.get_speaker_embedding(ref_wav_16k).to(dtype=torch.bfloat16)
 
                 logits = model(src_tokens, tgt_tokens, spk_emb)
                 loss = criterion(logits.reshape(-1, VOCAB_SIZE), tgt_tokens.reshape(-1))
