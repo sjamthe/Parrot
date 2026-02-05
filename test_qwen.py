@@ -2,7 +2,6 @@ import torch
 import torchaudio
 import soundfile as sf
 from transformers import AutoModel
-from speechbrain.inference.speaker import EncoderClassifier
 from model import ParrotMoshi
 from qwen_wrapper import QwenWrapper
 from pathlib import Path
@@ -28,7 +27,6 @@ def main():
 
     # 1. Load Models
     qwen = QwenWrapper(device=DEVICE)
-    speaker_encoder = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb", run_opts={"device": DEVICE})
     
     # Auto-detect number of codebooks
     dummy_wav = torch.zeros(1, 1, 24000).to(DEVICE) 
@@ -36,7 +34,7 @@ def main():
         num_codebooks = qwen.encode(dummy_wav).audio_codes.shape[1]
         print(f"Detected {num_codebooks} codebooks.")
 
-    model = ParrotMoshi(vocab_size=VOCAB_SIZE, num_codebooks=num_codebooks).to(DEVICE)
+    model = ParrotMoshi(vocab_size=VOCAB_SIZE, num_codebooks=num_codebooks, speaker_dim=2048).to(DEVICE)
     if Path(WEIGHTS_PATH).exists():
         model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE))
         print("Loaded weights.")
@@ -53,27 +51,29 @@ def main():
     v2 = voices[1] 
     
     s_id = "sentence_005" 
-    ext = ".mp3"
+    #ext = ".mp3" # Or .wav
+    for ext in [".mp3", ".wav"]:
+        if (v1 / f"{s_id}{ext}").exists(): break
     
     src_path = v1 / f"{s_id}{ext}"
-    ref_path = v2 / f"sentence_001{ext}"
-    gt_path = v2 / f"{s_id}{ext}"
+    ref_path = v2 / "sentence_001{ext}" # Any sentence for style
+    gt_path = v2 / f"{s_id}{ext}"        # SAME sentence ID as source, but in target voice
     
     if not gt_path.exists():
-        print(f"Warning: {gt_path} not found.")
-        return
+        print(f"Warning: {gt_path} not found, using random.")
+        # Fallback to whatever is available
+        gt_path = src_path
 
     print(f"Source Content: {src_path}")
     print(f"Target Style:   {ref_path}")
-    print(f"Comparing vs:   {gt_path}")
+    print(f"Comparing vs:   {gt_path} (Ground Truth)")
     
     # 3. Process
     src_wav, _ = load_audio(src_path)
     src_wav = src_wav.to(DEVICE)
     
     ref_wav, _ = load_audio(ref_path)
-    resampler = torchaudio.transforms.Resample(SAMPLE_RATE, 16000).to(DEVICE)
-    spk_emb = speaker_encoder.encode_batch(resampler(ref_wav.to(DEVICE)).squeeze(1)).squeeze(1)
+    ref_wav = ref_wav.to(DEVICE)
     
     gt_wav, _ = load_audio(gt_path)
     gt_wav = gt_wav.to(DEVICE)
@@ -82,11 +82,14 @@ def main():
         src_tokens = qwen.encode(src_wav.unsqueeze(1)).audio_codes.transpose(1, 2)
         tgt_tokens_gt = qwen.encode(gt_wav.unsqueeze(1)).audio_codes.transpose(1, 2)
         
+        # New Speaker Embedding from Qwen
+        spk_emb = qwen.get_speaker_embedding(ref_wav.unsqueeze(1))
+        
         print("\nGenerating...")
         max_len = tgt_tokens_gt.shape[1]
         
         # Adaptive Temp
-        temps = [0.2] * 4 + [0.8] * (32 - 4)
+        temps = [0.2] * 4 + [0.8] * (num_codebooks - 4)
         generated_tokens = model.generate(src_tokens, spk_emb, max_len=max_len, temperature=temps, top_k=50)
         
         print("\n--- Token Match Diagnosis (First 4 Codebooks) ---")
@@ -102,7 +105,6 @@ def main():
         print(f"\nSummary: {matches}/{limit} matched.")
 
         # Decode
-        # qwen.decode expects [B, 32, T]
         decoded = qwen.decode(generated_tokens.transpose(1, 2)).audio_values
         
     out_path = "test_qwen_output.wav"

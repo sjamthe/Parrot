@@ -4,14 +4,15 @@
 RUNPOD_HOST="194.68.245.62"
 RUNPOD_PORT="22197"
 SSH_KEY="$HOME/.ssh/id_ed25519"
-REMOTE_PATH="/workspace/Parrot/parrot_moshi_weights.pt"
+MODEL_FILE="parrot_qwen_weights.pt"
+REMOTE_PATH="/workspace/Parrot/$MODEL_FILE"
 LOCAL_DIR="$HOME/Documents/GithubRepos/Parrot/models"
-INTERVAL=720  # 12 minutes in seconds
+INTERVAL=540  # 9 minutes in seconds
 
 # Create local directory if it doesn't exist
 mkdir -p "$LOCAL_DIR"
 
-echo "Starting model sync (every 12 minutes)..."
+echo "Starting model sync (every $INTERVAL seconds)..."
 echo "Remote: $RUNPOD_HOST:$REMOTE_PATH"
 echo "Local: $LOCAL_DIR"
 echo "Press Ctrl+C to stop"
@@ -27,18 +28,18 @@ while true; do
         "$LOCAL_DIR/"
     
     if [ $? -eq 0 ]; then
-        SIZE=$(ls -lh "$LOCAL_DIR/parrot_moshi_weights.pt" | awk '{print $5}')
+        SIZE=$(ls -lh "$LOCAL_DIR/$MODEL_FILE" | awk '{print $5}')
         echo "[$TIMESTAMP] ✓ Synced successfully ($SIZE)"
-        uv run test_moshi.py && play test_moshi_output.wav
+        uv run test_qwen.py && play test_qwen_output.wav
     else
         echo "[$TIMESTAMP] ✗ Sync failed"
     fi
     
     # Also sync periodic checkpoints if they exist
     scp -P "$RUNPOD_PORT" -i "$SSH_KEY" \
-        "root@$RUNPOD_HOST:/workspace/your-moshi-project/parrot_moshi_epoch_*.pt" \
+        "root@$RUNPOD_HOST:/workspace/your-moshi-project/parrot_qwen_epoch_*.pt" \
         "$LOCAL_DIR/" 2>/dev/null
     
-    echo "[$TIMESTAMP] Waiting 12 minutes..."
+    echo "[$TIMESTAMP] Waiting $INTERVAL seconds..."
     sleep "$INTERVAL"
 done

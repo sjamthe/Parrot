@@ -7,24 +7,18 @@ import random
 import time
 from datetime import datetime
 from torch.utils.data import Dataset, DataLoader
-
-# Monkeypatch
-if not hasattr(torchaudio, "list_audio_backends"):
-    torchaudio.list_audio_backends = lambda: ["soundfile"]
-
-from speechbrain.inference.speaker import EncoderClassifier
 from model import ParrotMoshi
 from qwen_wrapper import QwenWrapper
 from pathlib import Path
 
 # --- CONFIGURATION ---
 DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
-SAMPLE_RATE = 24000 # Qwen might resample internally
-BATCH_SIZE = 8
+SAMPLE_RATE = 24000 
+BATCH_SIZE = 64
 EPOCHS = 100
 LEARNING_RATE = 1e-4
 WEIGHTS_PATH = "parrot_qwen_weights.pt"
-VOCAB_SIZE = 4096 # Assuming Qwen vocab fits here. If error, increase to 16384.
+VOCAB_SIZE = 4096 
 
 def load_audio(path):
     wav, sr = sf.read(path)
@@ -83,45 +77,26 @@ def collate_fn(batch):
 def train():
     wandb.init(project="parrot-qwen", config={"lr": LEARNING_RATE, "batch": BATCH_SIZE})
     
-    print("Loading Qwen & SpeakerEncoder...")
-    # Initialize Qwen Wrapper
+    print("Loading Qwen Models...")
     qwen = QwenWrapper(device=DEVICE)
-    
-    speaker_encoder = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb", run_opts={"device": DEVICE})
     
     train_ds = ParrotDataset("parrot_dataset", split="train")
     val_ds = ParrotDataset("parrot_dataset", split="val")
     
-    # Optimized DataLoader
     num_workers = 0 if DEVICE == "mps" else 4
     pin_memory = DEVICE == "cuda"
 
-    train_dl = DataLoader(
-        train_ds, 
-        batch_size=BATCH_SIZE, 
-        shuffle=True, 
-        collate_fn=collate_fn,
-        num_workers=num_workers,
-        pin_memory=pin_memory
-    )
-    val_dl = DataLoader(
-        val_ds, 
-        batch_size=BATCH_SIZE, 
-        shuffle=False, 
-        collate_fn=collate_fn,
-        num_workers=num_workers // 2 if num_workers > 0 else 0,
-        pin_memory=pin_memory
-    )
+    train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn, num_workers=num_workers, pin_memory=pin_memory)
+    val_dl = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=num_workers // 2 if num_workers > 0 else 0, pin_memory=pin_memory)
     
     # Auto-detect number of codebooks
-    dummy_wav = torch.zeros(1, 1, 24000).to(DEVICE) # 1 sec dummy
+    dummy_wav = torch.zeros(1, 1, 24000).to(DEVICE)
     with torch.no_grad():
         dummy_codes = qwen.encode(dummy_wav).audio_codes
         num_codebooks = dummy_codes.shape[1]
         print(f"Detected {num_codebooks} codebooks from Qwen.")
 
-    # Init ParrotMoshi
-    model = ParrotMoshi(vocab_size=VOCAB_SIZE, num_codebooks=num_codebooks).to(DEVICE)
+    model = ParrotMoshi(vocab_size=VOCAB_SIZE, num_codebooks=num_codebooks, speaker_dim=2048).to(DEVICE)
     
     if Path(WEIGHTS_PATH).exists():
         print("Resuming Qwen model...")
@@ -129,7 +104,6 @@ def train():
         
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.CrossEntropyLoss()
-    resampler_16k = torchaudio.transforms.Resample(SAMPLE_RATE, 16000).to(DEVICE)
     
     best_val_loss = float('inf')
 
@@ -141,17 +115,11 @@ def train():
             src_wav, tgt_wav, ref_wav = src_wav.to(DEVICE), tgt_wav.to(DEVICE), ref_wav.to(DEVICE)
             
             with torch.no_grad():
-                # Qwen Encode (Returns [B, 32, T])
-                # src_wav needs to be [B, 1, T] or list of [T]. Wrapper handles it.
-                src_tokens = qwen.encode(src_wav).audio_codes.transpose(1, 2) # [B, T, 32]
-                tgt_tokens = qwen.encode(tgt_wav).audio_codes.transpose(1, 2) # [B, T, 32]
-                
-                ref_wav_16k = resampler_16k(ref_wav)
-                spk_emb = speaker_encoder.encode_batch(ref_wav_16k.squeeze(1)).squeeze(1)
+                src_tokens = qwen.encode(src_wav).audio_codes.transpose(1, 2)
+                tgt_tokens = qwen.encode(tgt_wav).audio_codes.transpose(1, 2)
+                spk_emb = qwen.get_speaker_embedding(ref_wav) # [B, 2048]
 
             logits = model(src_tokens, tgt_tokens, spk_emb)
-            
-            # Loss
             loss = criterion(logits.reshape(-1, VOCAB_SIZE), tgt_tokens.reshape(-1))
             
             optimizer.zero_grad()
@@ -168,12 +136,9 @@ def train():
         with torch.no_grad():
             for src_wav, tgt_wav, ref_wav in val_dl:
                 src_wav, tgt_wav, ref_wav = src_wav.to(DEVICE), tgt_wav.to(DEVICE), ref_wav.to(DEVICE)
-                
                 src_tokens = qwen.encode(src_wav).audio_codes.transpose(1, 2)
                 tgt_tokens = qwen.encode(tgt_wav).audio_codes.transpose(1, 2)
-                
-                ref_wav_16k = resampler_16k(ref_wav)
-                spk_emb = speaker_encoder.encode_batch(ref_wav_16k.squeeze(1)).squeeze(1)
+                spk_emb = qwen.get_speaker_embedding(ref_wav)
 
                 logits = model(src_tokens, tgt_tokens, spk_emb)
                 loss = criterion(logits.reshape(-1, VOCAB_SIZE), tgt_tokens.reshape(-1))
