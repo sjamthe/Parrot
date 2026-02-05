@@ -13,7 +13,9 @@ class SinusoidalPositionalEmbedding(nn.Module):
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        return x + self.pe[:x.size(1), :].unsqueeze(0)
+        # Cast pe to match input dtype (e.g. bfloat16)
+        pe = self.pe[:x.size(1), :].unsqueeze(0).to(dtype=x.dtype)
+        return x + pe
 
 class ParrotMoshi(nn.Module):
     """
@@ -98,7 +100,9 @@ class ParrotMoshi(nn.Module):
         tgt_fused = self._fuse_codebooks(tgt_tokens) # [B, T_t, D]
         
         # Create SOS token (Learnable or Zero)
-        sos_emb = torch.zeros(B, 1, self.hidden_dim, device=tgt_tokens.device)
+        # Match dtype of model parameters
+        dtype = self.spk_proj.weight.dtype
+        sos_emb = torch.zeros(B, 1, self.hidden_dim, device=tgt_tokens.device, dtype=dtype)
         # Shift: [SOS, Fused_0, Fused_1, ..., Fused_T-2] -> Predicts H_0 ... H_T-1
         temporal_in = torch.cat([sos_emb, tgt_fused[:, :-1, :]], dim=1)
         temporal_in = self.pos_emb(temporal_in)
@@ -194,14 +198,15 @@ class ParrotMoshi(nn.Module):
         
         # 2. Loop
         curr_tgt_tokens = torch.zeros(1, 0, self.num_codebooks, dtype=torch.long, device=src_tokens.device)
+        dtype = self.spk_proj.weight.dtype
         
         for t in range(max_len):
             # --- Temporal Step ---
             if t == 0:
-                temporal_in = torch.zeros(1, 1, self.hidden_dim, device=src_tokens.device) # SOS
+                temporal_in = torch.zeros(1, 1, self.hidden_dim, device=src_tokens.device, dtype=dtype) # SOS
             else:
                 fused_hist = self._fuse_codebooks(curr_tgt_tokens)
-                sos = torch.zeros(1, 1, self.hidden_dim, device=src_tokens.device)
+                sos = torch.zeros(1, 1, self.hidden_dim, device=src_tokens.device, dtype=dtype)
                 temporal_in = torch.cat([sos, fused_hist], dim=1) # [1, T+1, D]
                 temporal_in = self.pos_emb(temporal_in)
 
