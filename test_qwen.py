@@ -2,8 +2,6 @@ import torch
 import torchaudio
 import soundfile as sf
 from transformers import AutoModel
-from speechbrain.inference.speaker import EncoderClassifier
-from model import ParrotMoshi
 from qwen_wrapper import QwenWrapper
 from pathlib import Path
 import random
@@ -11,6 +9,9 @@ import random
 # Monkeypatch
 if not hasattr(torchaudio, "list_audio_backends"):
     torchaudio.list_audio_backends = lambda: ["soundfile"]
+
+from speechbrain.inference.speaker import EncoderClassifier
+from model import ParrotMoshi
 
 DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
 SAMPLE_RATE = 24000
