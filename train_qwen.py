@@ -15,6 +15,7 @@ from pathlib import Path
 DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
 SAMPLE_RATE = 24000 
 BATCH_SIZE = 64
+if DEVICE == "mps": BATCH_SIZE = 4
 EPOCHS = 100
 LEARNING_RATE = 1e-4
 WEIGHTS_PATH = "parrot_qwen_weights.pt"
@@ -118,12 +119,17 @@ def train():
             src_wav, tgt_wav, ref_wav = src_wav.to(DEVICE), tgt_wav.to(DEVICE), ref_wav.to(DEVICE)
             
             with torch.no_grad():
-                # Qwen Encode (Returns [B, T, 32] -> Transposed)
-                src_tokens = qwen.encode(src_wav).audio_codes.transpose(1, 2)
-                tgt_tokens = qwen.encode(tgt_wav).audio_codes.transpose(1, 2)
+                # Resample to 16k on GPU first to avoid CPU bottleneck in tokenizer
+                src_wav_16k = resampler_16k(src_wav)
+                tgt_wav_16k = resampler_16k(tgt_wav)
+                ref_wav_16k = resampler_16k(ref_wav) # Already used for spk_emb
                 
-                # Speaker Embedding is BF16 from Qwen
-                spk_emb = qwen.get_speaker_embedding(ref_wav) 
+                # Qwen Encode (Input 16k)
+                src_tokens = qwen.encode(src_wav_16k, sr=16000).audio_codes.transpose(1, 2)
+                tgt_tokens = qwen.encode(tgt_wav_16k, sr=16000).audio_codes.transpose(1, 2)
+                
+                # Speaker Embedding
+                spk_emb = qwen.get_speaker_embedding(ref_wav_16k).float() # Cast if needed, or remove float() if using BF16 model logic
 
             # Forward pass (BF16 model handles BF16 inputs)
             logits = model(src_tokens, tgt_tokens, spk_emb)
@@ -145,9 +151,14 @@ def train():
         with torch.no_grad():
             for src_wav, tgt_wav, ref_wav in val_dl:
                 src_wav, tgt_wav, ref_wav = src_wav.to(DEVICE), tgt_wav.to(DEVICE), ref_wav.to(DEVICE)
-                src_tokens = qwen.encode(src_wav).audio_codes.transpose(1, 2)
-                tgt_tokens = qwen.encode(tgt_wav).audio_codes.transpose(1, 2)
-                spk_emb = qwen.get_speaker_embedding(ref_wav)
+                
+                src_wav_16k = resampler_16k(src_wav)
+                tgt_wav_16k = resampler_16k(tgt_wav)
+                ref_wav_16k = resampler_16k(ref_wav)
+
+                src_tokens = qwen.encode(src_wav_16k, sr=16000).audio_codes.transpose(1, 2)
+                tgt_tokens = qwen.encode(tgt_wav_16k, sr=16000).audio_codes.transpose(1, 2)
+                spk_emb = qwen.get_speaker_embedding(ref_wav_16k)
 
                 logits = model(src_tokens, tgt_tokens, spk_emb)
                 loss = criterion(logits.reshape(-1, VOCAB_SIZE), tgt_tokens.reshape(-1))

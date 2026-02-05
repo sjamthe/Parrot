@@ -83,9 +83,10 @@ class QwenWrapper(nn.Module):
             
         return torch.stack(embeddings).to(self.device)
 
-    def encode(self, wav_tensor):
+    def encode(self, wav_tensor, sr=24000):
         """
         wav_tensor: [B, C, T] or list of waveforms
+        sr: Sampling rate of input audio (Default 24000)
         Returns: QwenOutput with .audio_codes of shape [B, 32, T]
         """
         if torch.is_tensor(wav_tensor):
@@ -95,7 +96,7 @@ class QwenWrapper(nn.Module):
             audios = wav_tensor
 
         with torch.no_grad():
-            outputs = self.tokenizer.encode(audios, sr=24000, return_dict=True)
+            outputs = self.tokenizer.encode(audios, sr=sr, return_dict=True)
             codes = outputs.audio_codes 
             
             # If list of tensors, pad sequence and stack
