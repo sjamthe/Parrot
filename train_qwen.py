@@ -7,6 +7,12 @@ import random
 import time
 from datetime import datetime
 from torch.utils.data import Dataset, DataLoader
+
+# Monkeypatch for torchaudio if needed (macOS/old versions)
+if not hasattr(torchaudio, "list_audio_backends"):
+    torchaudio.list_audio_backends = lambda: ["soundfile"]
+
+from speechbrain.inference.speaker import EncoderClassifier
 from model import ParrotMoshi
 from qwen_wrapper import QwenWrapper
 from pathlib import Path
@@ -81,6 +87,9 @@ def train():
     print("Loading Qwen Models...")
     qwen = QwenWrapper(device=DEVICE)
     
+    print("Loading Speaker Encoder...")
+    speaker_encoder = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb", run_opts={"device": DEVICE})
+    
     train_ds = ParrotDataset("parrot_dataset", split="train")
     val_ds = ParrotDataset("parrot_dataset", split="val")
     
@@ -94,15 +103,19 @@ def train():
     dummy_wav = torch.zeros(1, 1, 24000).to(DEVICE)
     with torch.no_grad():
         dummy_codes = qwen.encode(dummy_wav).audio_codes
-        num_codebooks = dummy_codes.shape[1]
+        num_codebooks = dummy_codes.shape[2] # Qwen returns [B, T, C] now
         print(f"Detected {num_codebooks} codebooks from Qwen.")
 
     # Init ParrotMoshi (BF16 for A40)
-    model = ParrotMoshi(vocab_size=VOCAB_SIZE, num_codebooks=num_codebooks, speaker_dim=2048).to(DEVICE, dtype=torch.bfloat16)
+    model = ParrotMoshi(vocab_size=VOCAB_SIZE, num_codebooks=num_codebooks, speaker_dim=192).to(DEVICE, dtype=torch.bfloat16)
     
     if Path(WEIGHTS_PATH).exists():
         print("Resuming Qwen model...")
-        model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE))
+        try:
+            model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE))
+        except RuntimeError as e:
+            print(f"Warning: loading weights failed strict match ({e}). Trying strict=False for speaker_dim change.")
+            model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE), strict=False)
         
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.CrossEntropyLoss()
@@ -125,11 +138,12 @@ def train():
                 ref_wav_16k = resampler_16k(ref_wav) # Already used for spk_emb
                 
                 # Qwen Encode (Input 16k)
-                src_tokens = qwen.encode(src_wav_16k, sr=16000).audio_codes.transpose(1, 2)
-                tgt_tokens = qwen.encode(tgt_wav_16k, sr=16000).audio_codes.transpose(1, 2)
+                # Returns [B, T, C] now. No transpose needed.
+                src_tokens = qwen.encode(src_wav_16k, sr=16000).audio_codes
+                tgt_tokens = qwen.encode(tgt_wav_16k, sr=16000).audio_codes
                 
                 # Speaker Embedding
-                spk_emb = qwen.get_speaker_embedding(ref_wav_16k).to(dtype=torch.bfloat16)
+                spk_emb = speaker_encoder.encode_batch(ref_wav_16k.squeeze(1)).squeeze(1).to(dtype=torch.bfloat16)
 
             # Forward pass (BF16 model handles BF16 inputs)
             logits = model(src_tokens, tgt_tokens, spk_emb)
@@ -156,9 +170,9 @@ def train():
                 tgt_wav_16k = resampler_16k(tgt_wav)
                 ref_wav_16k = resampler_16k(ref_wav)
 
-                src_tokens = qwen.encode(src_wav_16k, sr=16000).audio_codes.transpose(1, 2)
-                tgt_tokens = qwen.encode(tgt_wav_16k, sr=16000).audio_codes.transpose(1, 2)
-                spk_emb = qwen.get_speaker_embedding(ref_wav_16k).to(dtype=torch.bfloat16)
+                src_tokens = qwen.encode(src_wav_16k, sr=16000).audio_codes
+                tgt_tokens = qwen.encode(tgt_wav_16k, sr=16000).audio_codes
+                spk_emb = speaker_encoder.encode_batch(ref_wav_16k.squeeze(1)).squeeze(1).to(dtype=torch.bfloat16)
 
                 logits = model(src_tokens, tgt_tokens, spk_emb)
                 loss = criterion(logits.reshape(-1, VOCAB_SIZE), tgt_tokens.reshape(-1))

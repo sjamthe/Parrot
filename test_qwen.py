@@ -2,6 +2,7 @@ import torch
 import torchaudio
 import soundfile as sf
 from transformers import AutoModel
+from speechbrain.inference.speaker import EncoderClassifier
 from model import ParrotMoshi
 from qwen_wrapper import QwenWrapper
 from pathlib import Path
@@ -27,19 +28,24 @@ def main():
 
     # 1. Load Models
     qwen = QwenWrapper(device=DEVICE)
+    speaker_encoder = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb", run_opts={"device": DEVICE})
     
     # Auto-detect number of codebooks
     dummy_wav = torch.zeros(1, 1, 24000).to(DEVICE) 
     with torch.no_grad():
-        num_codebooks = qwen.encode(dummy_wav).audio_codes.shape[1]
+        num_codebooks = qwen.encode(dummy_wav).audio_codes.shape[2]
         print(f"Detected {num_codebooks} codebooks.")
 
     # Model in BF16
-    model = ParrotMoshi(vocab_size=VOCAB_SIZE, num_codebooks=num_codebooks, speaker_dim=2048).to(DEVICE, dtype=torch.bfloat16)
+    model = ParrotMoshi(vocab_size=VOCAB_SIZE, num_codebooks=num_codebooks, speaker_dim=192).to(DEVICE, dtype=torch.bfloat16)
     
     if Path(WEIGHTS_PATH).exists():
-        model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE))
-        print("Loaded weights.")
+        try:
+            model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE))
+            print("Loaded weights.")
+        except RuntimeError:
+            print("Warning: strict loading failed (likely speaker_dim mismatch). Loading with strict=False.")
+            model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE), strict=False)
     else:
         print("No weights found!")
         return
@@ -80,12 +86,18 @@ def main():
     gt_wav, _ = load_audio(gt_path)
     gt_wav = gt_wav.to(DEVICE)
     
+    # Resample for Qwen/SpeakerEncoder
+    resampler_16k = torchaudio.transforms.Resample(SAMPLE_RATE, 16000).to(DEVICE)
+    src_wav_16k = resampler_16k(src_wav)
+    ref_wav_16k = resampler_16k(ref_wav)
+    gt_wav_16k = resampler_16k(gt_wav)
+    
     with torch.no_grad():
-        src_tokens = qwen.encode(src_wav.unsqueeze(1)).audio_codes.transpose(1, 2)
-        tgt_tokens_gt = qwen.encode(gt_wav.unsqueeze(1)).audio_codes.transpose(1, 2)
+        src_tokens = qwen.encode(src_wav_16k.unsqueeze(1), sr=16000).audio_codes # [1, T, 32]
+        tgt_tokens_gt = qwen.encode(gt_wav_16k.unsqueeze(1), sr=16000).audio_codes # [1, T, 32]
         
-        # New Speaker Embedding
-        spk_emb = qwen.get_speaker_embedding(ref_wav.unsqueeze(1))
+        # New Speaker Embedding (SpeechBrain)
+        spk_emb = speaker_encoder.encode_batch(ref_wav_16k.unsqueeze(0)).squeeze(1).to(dtype=torch.bfloat16)
         
         print("\nGenerating...")
         max_len = tgt_tokens_gt.shape[1]
@@ -106,8 +118,8 @@ def main():
         
         print(f"\nSummary: {matches}/{limit} matched.")
 
-        # Decode
-        decoded = qwen.decode(generated_tokens.transpose(1, 2)).audio_values
+        # Decode (No transpose needed)
+        decoded = qwen.decode(generated_tokens).audio_values
         
     out_path = "test_qwen_output.wav"
     sf.write(out_path, decoded.squeeze().float().cpu().numpy(), 24000) # .float() before numpy

@@ -27,7 +27,7 @@ class ParrotMoshi(nn.Module):
     2. Temporal Transformer (Main): Autoregressive over Time (T).
     3. Depth Transformer (Depformer): Autoregressive over Codebooks (K=32).
     """
-    def __init__(self, vocab_size=2048, hidden_dim=512, speaker_dim=2048, 
+    def __init__(self, vocab_size=2048, hidden_dim=512, speaker_dim=192, 
                  num_codebooks=32, nhead=8, num_layers_temp=6, num_layers_depth=4):
         super().__init__()
         self.num_codebooks = num_codebooks
