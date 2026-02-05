@@ -67,9 +67,13 @@ class QwenWrapper(nn.Module):
         
         embeddings = []
         for audio in audios:
+            # For numpy input, Qwen expects tuple (audio, sr)
+            # We assume 24000 as per our pipeline
+            audio_input = (audio, 24000)
+            
             # We provide a dummy text because it's required but we only want embedding
             prompt = self.model.create_voice_clone_prompt(
-                ref_audio=audio,
+                ref_audio=audio_input,
                 ref_text=text,
                 x_vector_only_mode=False 
             )
